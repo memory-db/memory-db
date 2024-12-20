@@ -26,9 +26,11 @@ pub struct State {
 }
 
 impl State {
-  /// Loads the newest snapshot it can find into memory.
-  /// Then Reads the WAL and replays the data mutation queries. Also sets up thread for writing
-  /// snapshots and WAL in background jobs.
+  /// [State::init] does in order:
+  /// - Loads the newest snapshot, if one exists, it can find into memory.
+  /// - Reads the WAL and replays the data mutations to the snapshot
+  ///   (or empty data).
+  /// - Spawns thread for writing snapshots.
   pub fn init(&mut self) -> std::io::Result<()> {
     if Path::new(super::SNAPSHOT_DIR).exists() {
       let mut files = utils::files_in_dir(super::SNAPSHOT_DIR).unwrap();
@@ -39,18 +41,22 @@ impl State {
         let newest_snapshot = files[files.len() - 1].path();
         tracing::trace!("Loading snapshot into memory: {:?}", newest_snapshot);
 
-        let mut snapshot_file = File::open(newest_snapshot)?;
+        let mut snapshot_file = File::open(newest_snapshot.clone())?;
 
         let mut snapshot_buf = Vec::new();
         snapshot_file.read_to_end(&mut snapshot_buf)?;
 
-        let deserialized_snapshot: HashMap<DataStoreKey, DataStoreValue> =
-          bincode::deserialize(&snapshot_buf).unwrap();
+        if let Ok(deserialized_snapshot) =
+          bincode::deserialize::<HashMap<DataStoreKey, DataStoreValue>>(&snapshot_buf)
+        {
+          let hash_map: DashMap<DataStoreKey, DataStoreValue> =
+            deserialized_snapshot.into_iter().collect();
 
-        let hash_map: DashMap<DataStoreKey, DataStoreValue> =
-          deserialized_snapshot.into_iter().collect();
-
-        self.store = Arc::new(hash_map);
+          self.store = Arc::new(hash_map);
+        } else {
+          tracing::error!("Corrupted snapshot: {:?}", &newest_snapshot);
+          fs::remove_file(newest_snapshot).expect("Failed to remove corrupted snapshot");
+        };
       }
     }
 
@@ -121,9 +127,9 @@ impl State {
 
         tracing::trace!("Success");
 
-        tracing::trace!("Removed WAL");
         if Path::new(super::WAL_FILE).exists() {
           fs::remove_file(super::WAL_FILE).unwrap();
+          tracing::trace!("Removed WAL");
         }
 
         tracing::trace!("Cleaning old snapshots");

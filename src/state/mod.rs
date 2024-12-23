@@ -14,4 +14,8 @@ const WAL_FILE: &str = "/etc/memorydb/data.wal";
 
 const DATE_FMT: &str = "%Y-%m-%d-%H:%M:%S";
 const SNAPSHOT_KEEP_AMOUNT: usize = 10;
+
+#[cfg(debug_assertions)]
+const SNAPSHOT_WRITE_INTERVAL_SEC: u64 = 5;
+#[cfg(not(debug_assertions))]
 const SNAPSHOT_WRITE_INTERVAL_SEC: u64 = 60;

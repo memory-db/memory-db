@@ -25,6 +25,8 @@
             bacon
             rustc
             clippy
+
+            protobuf_21 # raft build-dep
           ];
 
         };

@@ -32,6 +32,7 @@ impl State {
   ///   (or empty data).
   /// - Spawns thread for writing snapshots.
   pub fn init(&mut self) -> std::io::Result<()> {
+    fs::create_dir_all(super::SNAPSHOT_DIR).expect("Cannot create database dirs");
     if Path::new(super::SNAPSHOT_DIR).exists() {
       let mut files = utils::files_in_dir(super::SNAPSHOT_DIR).unwrap();
 
@@ -127,10 +128,12 @@ impl State {
 
         tracing::trace!("Success");
 
-        if Path::new(super::WAL_FILE).exists() {
-          fs::remove_file(super::WAL_FILE).unwrap();
-          tracing::trace!("Removed WAL");
-        }
+        let file_options =
+          OpenOptions::new().write(true).truncate(true).open(Path::new(super::WAL_FILE));
+
+        if let Ok(file) = file_options {
+          file.set_len(0).unwrap();
+        };
 
         tracing::trace!("Cleaning old snapshots");
         let mut files = utils::files_in_dir(super::SNAPSHOT_DIR).unwrap();

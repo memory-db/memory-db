@@ -16,7 +16,7 @@ impl HandleQuery for ReadQuery {
   fn exec(self, datastore: DataStore) -> Vec<u8> {
     let Self { key } = self;
 
-    if let Some(value) = datastore.get(&key.as_str().into()) {
+    if let Some(value) = datastore.0.get(&key.as_str().into()) {
       let mut value = value.0.to_vec();
       value.extend("\n".as_bytes().to_vec());
       value
@@ -35,7 +35,7 @@ pub struct PutQuery {
 impl HandleQuery for PutQuery {
   fn exec(self, datastore: DataStore) -> Vec<u8> {
     let Self { key, value } = self;
-    datastore.insert(key.as_str().into(), value.into());
+    datastore.0.insert(key.as_str().into(), value.into());
     "OK\n".as_bytes().to_vec()
   }
 }
@@ -49,7 +49,7 @@ impl HandleQuery for DeleteQuery {
   fn exec(self, datastore: DataStore) -> Vec<u8> {
     let Self { key } = self;
 
-    datastore.remove(&DataStoreKey::from(key.as_str()));
+    datastore.0.remove(&DataStoreKey::from(key.as_str()));
 
     "OK\n".as_bytes().to_vec()
   }

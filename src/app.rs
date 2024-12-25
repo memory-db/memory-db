@@ -1,66 +1,60 @@
-use std::{
-  error::Error,
-  future::{Future, IntoFuture},
-  pin::Pin,
-  time::Duration,
+use std::{error::Error, time::Duration};
+
+use tokio::{
+  sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
+  task,
+  time::interval,
 };
 
-use tokio::time::interval;
-
 use crate::{
-  state::State,
-  storage::{MyStorage, RaftNode},
+  storage::{DataBaseStorage, RaftNode},
   tcp::server::TcpServer,
 };
 
 pub struct App {
   tcp: TcpServer,
-  raft_node: RaftNode,
-  state: State,
 }
 
 impl App {
-  fn new() -> Result<App, Box<dyn Error>> {
-    let mut state = State::default();
-    state.init();
-    let tcp = TcpServer::new("0.0.0.0:8080", state);
+  fn spawn_raft_statemachine(storage: DataBaseStorage, sender: UnboundedSender<()>) {
+    task::spawn(async move {
+      let config = raft::Config { id: rand::random(), ..Default::default() };
 
-    let storage = MyStorage::default();
-    let config = raft::Config { id: rand::random(), ..Default::default() }.validate()?;
-    let raft_node = RaftNode::new(&config, &storage)?;
+      config.validate().unwrap();
 
-    Ok(Self { tcp, state, raft_node })
-  }
-}
-
-impl IntoFuture for App {
-  type Output = Result<(), Box<dyn Error>>;
-  type IntoFuture = Pin<Box<dyn Future<Output = Self::Output>>>;
-  fn into_future(self) -> Self::IntoFuture {
-    Box::pin(async move {
-      let ping = interval(Duration::from_millis(100));
-
-      ping.tick().await;
+      let mut raft_node = RaftNode::new(&config, storage).unwrap();
+      let mut schedule = interval(Duration::from_millis(100));
 
       loop {
-        ping.tick().await;
+        schedule.tick().await;
 
-        // https://docs.rs/raft/latest/raft/index.html#processing-the-ready-state
-        if let Some(mut payload) = self.raft_node.tick() {
-          if !payload.messages().is_empty() {
-            for msg in payload.take_messages() {
-              unimplemented!("Send msgs to other peers.");
+        match raft_node.tick().await {
+          Ok(thing) => {
+            if let Some(stuff) = thing {
+              for item in stuff {
+                sender.send(item).unwrap();
+              }
             }
           }
-
-          if !payload.snapshot().is_empty() {
-            // This is a snapshot, we need to apply the snapshot at first.
-            //self.raft_node.mut_store().wl().apply_snapshot(ready.snapshot().clone()).unwrap();
-          }
+          Err(err) => tracing::error!("Raft state machine error: {:?}", err),
         }
       }
+    });
+  }
+  fn new() -> Result<App, Box<dyn Error>> {
+    let storage = DataBaseStorage::default();
+    let tcp = TcpServer::new("0.0.0.0:8080", state);
 
-      Ok(())
-    })
+    Ok(Self { tcp })
+  }
+
+  pub async fn run(&mut self) {
+    let (sender, mut receiver) = mpsc::unbounded_channel::<()>();
+    App::spawn_raft_statemachine(sender);
+
+    while let Some(value) = receiver.recv().await {
+      // TODO Handle value here
+      let _: () = value;
+    }
   }
 }

@@ -1,9 +1,34 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
+use bytes::Bytes;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
-pub type DataStore = Arc<DashMap<DataStoreKey, DataStoreValue>>;
+#[derive(Clone, Default)]
+pub struct DataStore(pub Arc<DashMap<DataStoreKey, DataStoreValue>>);
+
+impl TryFrom<DataStore> for Bytes {
+  type Error = ();
+  fn try_from(value: DataStore) -> Result<Self, Self::Error> {
+    let hash_map: HashMap<DataStoreKey, DataStoreValue> =
+      value.0.iter().map(|e| (e.key().clone(), e.value().clone())).collect();
+    let bytes: Vec<u8> = bincode::serialize(&hash_map).map_err(|_| ())?;
+
+    Ok(Bytes::from(bytes))
+  }
+}
+
+impl TryFrom<Bytes> for DataStore {
+  type Error = ();
+  fn try_from(value: Bytes) -> Result<Self, Self::Error> {
+    let hash_map: HashMap<DataStoreKey, DataStoreValue> =
+      bincode::deserialize(&value.to_vec()).map_err(|_| ())?;
+
+    let dash_map: DashMap<DataStoreKey, DataStoreValue> = DashMap::from_iter(hash_map.into_iter());
+
+    Ok(DataStore(Arc::new(dash_map)))
+  }
+}
 
 #[derive(Eq, PartialEq, Hash, Clone)]
 pub struct DataStoreKey(pub Arc<str>);

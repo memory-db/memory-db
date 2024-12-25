@@ -31,7 +31,8 @@ impl State {
   /// - Reads the WAL and replays the data mutations to the snapshot
   ///   (or empty data).
   /// - Spawns thread for writing snapshots.
-  pub fn init(&mut self) -> std::io::Result<()> {
+
+  fn install_snapshots(&mut self) -> std::io::Result<()> {
     fs::create_dir_all(super::SNAPSHOT_DIR).expect("Cannot create database dirs");
     if Path::new(super::SNAPSHOT_DIR).exists() {
       let mut files = utils::files_in_dir(super::SNAPSHOT_DIR).unwrap();
@@ -53,14 +54,17 @@ impl State {
           let hash_map: DashMap<DataStoreKey, DataStoreValue> =
             deserialized_snapshot.into_iter().collect();
 
-          self.store = Arc::new(hash_map);
+          self.store = DataStore(Arc::new(hash_map));
         } else {
           tracing::error!("Corrupted snapshot: {:?}", &newest_snapshot);
           fs::remove_file(newest_snapshot).expect("Failed to remove corrupted snapshot");
         };
       }
-    }
+    };
+    Ok(())
+  }
 
+  fn replay_wal(&mut self) -> std::io::Result<()> {
     if Path::new(super::WAL_FILE).exists() {
       let data_mutate_logs: Vec<DataChangeLog> =
         utils::read_appended_structs_from_file(super::WAL_FILE)?;
@@ -74,6 +78,86 @@ impl State {
       }
     }
 
+    Ok(())
+  }
+
+  fn create_snapshot(store: DataStore) -> std::io::Result<()> {
+    let _span = tracing::span!(Level::TRACE, "Snapshot");
+    let _span = _span.enter();
+
+    tracing::trace!("Starting snapshot");
+
+    let hash_map: HashMap<DataStoreKey, DataStoreValue> =
+      store.0.iter().map(|e| (e.key().clone(), e.value().clone())).collect();
+
+    let snapshot_rawdata = match bincode::serialize(&hash_map) {
+      Ok(data) => data,
+      Err(err) => {
+        tracing::error!("Binary serialization error: {:?}", err);
+        // TODO
+        return Ok(());
+      }
+    };
+
+    let current_date = Utc::now();
+    let formatted_date = current_date.format(super::DATE_FMT).to_string();
+
+    let file_name = format!("{formatted_date}-memorydb.dat");
+
+    if let Err(err) = fs::create_dir_all(super::SNAPSHOT_DIR) {
+      tracing::error!("File system access error: {:?}", err);
+
+      // TODO
+      return Ok(());
+    };
+
+    let mut file = OpenOptions::new()
+      .write(true)
+      .create(true)
+      .open(format!("{}/{file_name}", super::SNAPSHOT_DIR))
+      .unwrap();
+
+    if let Err(err) = file.write_all(&snapshot_rawdata) {
+      tracing::error!("File write error: {:?}", err);
+      // TODO
+      return Ok(());
+    };
+
+    if let Err(err) = file.flush() {
+      tracing::error!("File flush error: {:?}", err);
+      // TODO
+      return Ok(());
+    };
+
+    tracing::trace!("Success");
+
+    let file_options =
+      OpenOptions::new().write(true).truncate(true).open(Path::new(super::WAL_FILE));
+
+    if let Ok(file) = file_options {
+      file.set_len(0).unwrap();
+    };
+
+    tracing::trace!("Cleaning old snapshots");
+    let mut files = utils::files_in_dir(super::SNAPSHOT_DIR).unwrap();
+    utils::sort_snapshot_files(&mut files);
+
+    if files.len() > super::SNAPSHOT_KEEP_AMOUNT {
+      let files_to_remove = files.len() - super::SNAPSHOT_KEEP_AMOUNT;
+
+      for item in files.iter().take(files_to_remove) {
+        if let Err(err) = std::fs::remove_file(item.path()) {
+          tracing::error!("Old snapshot delete error: {:?}", err);
+          continue;
+        };
+      }
+    }
+    Ok(())
+  }
+  pub fn init(&mut self) -> std::io::Result<()> {
+    self.install_snapshots();
+    self.replay_wal();
+
     let store = self.store.clone();
     task::spawn(async move {
       let mut timing = interval(Duration::from_secs(super::SNAPSHOT_WRITE_INTERVAL_SEC));
@@ -83,84 +167,12 @@ impl State {
 
       loop {
         timing.tick().await;
-
-        let _span = tracing::span!(Level::TRACE, "Snapshot");
-        let _span = _span.enter();
-
-        tracing::trace!("Starting snapshot");
-
-        let hash_map: HashMap<DataStoreKey, DataStoreValue> =
-          store.iter().map(|e| (e.key().clone(), e.value().clone())).collect();
-
-        let snapshot_rawdata = match bincode::serialize(&hash_map) {
-          Ok(data) => data,
-          Err(err) => {
-            tracing::error!("Binary serialization error: {:?}", err);
-            continue;
-          }
-        };
-
-        let current_date = Utc::now();
-        let formatted_date = current_date.format(super::DATE_FMT).to_string();
-
-        let file_name = format!("{formatted_date}-memorydb.dat");
-
-        if let Err(err) = fs::create_dir_all(super::SNAPSHOT_DIR) {
-          tracing::error!("File system access error: {:?}", err);
-          continue;
-        };
-
-        let mut file = OpenOptions::new()
-          .write(true)
-          .create(true)
-          .open(format!("{}/{file_name}", super::SNAPSHOT_DIR))
-          .unwrap();
-
-        if let Err(err) = file.write_all(&snapshot_rawdata) {
-          tracing::error!("File write error: {:?}", err);
-          continue;
-        };
-
-        if let Err(err) = file.flush() {
-          tracing::error!("File flush error: {:?}", err);
-          continue;
-        };
-
-        tracing::trace!("Success");
-
-        let file_options =
-          OpenOptions::new().write(true).truncate(true).open(Path::new(super::WAL_FILE));
-
-        if let Ok(file) = file_options {
-          file.set_len(0).unwrap();
-        };
-
-        tracing::trace!("Cleaning old snapshots");
-        let mut files = utils::files_in_dir(super::SNAPSHOT_DIR).unwrap();
-        utils::sort_snapshot_files(&mut files);
-
-        if files.len() > super::SNAPSHOT_KEEP_AMOUNT {
-          let files_to_remove = files.len() - super::SNAPSHOT_KEEP_AMOUNT;
-
-          for item in files.iter().take(files_to_remove) {
-            if let Err(err) = std::fs::remove_file(item.path()) {
-              tracing::error!("Old snapshot delete error: {:?}", err);
-              continue;
-            };
-          }
-        }
+        State::create_snapshot(store.clone());
       }
     });
 
     Ok(())
   }
-
-  //pub async fn handle_incoming(&mut self, incoming: Request) -> Vec<u8> {
-  //    match incoming {
-  //        Request::DataQuery(query) => self.handle_query(query).await,
-  //        Request::Ping => "Pong".as_bytes().to_vec(),
-  //    }
-  //}
 
   pub async fn handle_query(&mut self, query: DataQuery) -> Vec<u8> {
     if let Some(logs) = query.as_datachangelogs() {

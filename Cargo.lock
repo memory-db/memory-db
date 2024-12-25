@@ -118,6 +118,9 @@ name = "bytes"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "325918d6fe32f23b19878fe4b34794ae41fc19ddbe53b10571a4874d44ffd39b"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "cast"
@@ -568,6 +571,7 @@ name = "memory-db"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "bytes",
  "chrono",
  "criterion",
  "dashmap",
